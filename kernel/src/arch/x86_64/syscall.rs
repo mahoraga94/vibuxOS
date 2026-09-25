@@ -1,4 +1,5 @@
 use core::arch::asm;
+use core::ptr::write_bytes;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 #[inline(always)]
@@ -1595,6 +1596,23 @@ pub(crate) fn copy_user_out(address: u64, input: &[u8]) -> Result<(), u64> {
     Ok(())
 }
 
+#[inline(always)]
+fn copy_user_zero(address: u64, len: usize) -> u64 {
+    if len == 0 { return 0; }
+    let end = match address.checked_add(len as u64) { Some(v) => v, None => return neg_errno(EFAULT) };
+    if address >= USER_LIMIT || end > USER_LIMIT || end < address { return neg_errno(EFAULT); }
+    let paging = PageTableManager::new(crate::velf::process_physical_offset());
+    let mut offset = 0usize;
+    while offset < len {
+        let va = address + offset as u64;
+        if paging.translate(va).is_none() { return neg_errno(EFAULT); }
+        let page_left = (PAGE_SIZE - (va & (PAGE_SIZE - 1))) as usize;
+        let n = core::cmp::min(page_left, len - offset);
+        unsafe { write_bytes(va as *mut u8, 0, n); }
+        offset += n;
+    }
+    0
+}
 pub(crate) fn read_c_string(address: u64, output: &mut [u8]) -> Result<usize, u64> {
     if output.is_empty() || address >= USER_LIMIT { return Err(EINVAL); }
     let paging = PageTableManager::new(crate::velf::process_physical_offset());
